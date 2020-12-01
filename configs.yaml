@@ -1,0 +1,191 @@
+# File for superset, redis and postgres configs. Need to add passwords before applying the file 
+# Source: superset/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: superset-config
+  labels:
+    app: superset
+    namespace: superset
+type: Opaque
+#For base64 ecnoding, use type Data 
+stringData:
+  init_superset.sh: |
+     export FLASK_APP=superset
+     flask fab create-admin --username admin --firstname admin --lastname admin --email admin@admin.com --password ''
+     export PREFERRED_URL_SCHEME='https'
+     superset db upgrade
+     superset init
+     pip3 install git+https://github.com/cloudflare/sqlalchemy-clickhouse.git
+     celery worker --app=superset.tasks.celery_app:app --pool=gevent -Ofair -nworker1 &
+     celery worker --app=superset.tasks.celery_app:app --pool=gevent -Ofair -nworker2 &
+     celery flower --app=superset.tasks.celery_app:app &
+     
+
+     # Start the prod web server
+      gunicorn \
+      -w 10 \
+      -k gevent \
+      --timeout 300 \
+      -b  0.0.0.0:8088 \
+      --limit-request-line 0 \
+      --limit-request-field_size 0 \
+      --forwarded-allow-ips="*" \
+      "superset.app:create_app()"
+      
+
+       
+  superset_config.py: |
+      import os
+
+      from werkzeug.contrib.cache import RedisCache
+      from flask_appbuilder.security.manager import AUTH_OAUTH
+      import json
+
+
+      def get_env_variable(var_name, default=None):
+          """Get the environment variable or raise exception.
+
+          Args:
+              var_name (str): the name of the environment variable to look up
+              default (str): the default value if no env is found
+          """
+          try:
+              return os.environ[var_name]
+          except KeyError:
+              if default is not None:
+                  return default
+              raise RuntimeError(
+                  'The environment variable {} was missing, abort...'
+                  .format(var_name)
+              )
+
+        # Postgres
+
+      POSTGRES_USER =  'postgres'
+      POSTGRES_PASSWORD = ''
+      POSTGRES_HOST = 'superset-postgresql'
+      POSTGRES_PORT = '5432'
+      POSTGRES_DB = 'superset'
+
+      SQLALCHEMY_DATABASE_URI = 'postgresql://{0}:{1}@{2}:{3}/{4}'.format(
+          POSTGRES_USER,
+          POSTGRES_PASSWORD,
+          POSTGRES_HOST,
+          POSTGRES_PORT,
+          POSTGRES_DB,
+      )
+
+      # Redis
+
+      REDIS_HOST = 'redis-master-superset'
+      REDIS_PORT = '6379'
+      REDIS_PASSWORD = ''
+      REDIS_DB = '1'
+      REDIS_DB2 = '0'
+      SUPERSET_CACHE_REDIS_URL = 'redis://:{0}@{1}:{2}/{3}'.format(
+          REDIS_PASSWORD,
+          REDIS_HOST,
+          REDIS_PORT,
+          REDIS_DB
+      )
+      SUPERSET_BROKER_URL = 'redis://:{0}@{1}:{2}/{3}'.format(
+          REDIS_PASSWORD,
+          REDIS_HOST,
+          REDIS_PORT,
+          REDIS_DB2
+      )
+      SUPERSET_CELERY_RESULT_BACKEND  = 'redis://:{0}@{1}:{2}/{3}'.format(
+          REDIS_PASSWORD,
+          REDIS_HOST,
+          REDIS_PORT,
+          REDIS_DB2
+      )
+
+      
+
+      CACHE_CONFIG = {
+          'CACHE_TYPE': 'redis',
+          'CACHE_DEFAULT_TIMEOUT': 60 * 60 * 24,
+          'CACHE_KEY_PREFIX': 'superset_',
+          'CACHE_REDIS_HOST': 'redis',
+          'CACHE_REDIS_PORT': 6379,
+          'CACHE_REDIS_DB': 1,
+          'CACHE_REDIS_URL': SUPERSET_CACHE_REDIS_URL
+      }
+
+
+      class CeleryConfig(object):
+          BROKER_URL = SUPERSET_BROKER_URL
+          CELERY_IMPORTS = ('superset.sql_lab', )
+          CELERY_RESULT_BACKEND = SUPERSET_CELERY_RESULT_BACKEND
+          CELERY_ANNOTATIONS = {'tasks.add': {'rate_limit': '10/s'}}
+
+      CELERY_CONFIG = CeleryConfig
+      RESULTS_BACKEND = RedisCache(
+          host=REDIS_HOST,
+          port=6379,
+          key_prefix='superset_results',
+          password=REDIS_PASSWORD
+      )
+      
+      AUTH_TYPE = AUTH_OAUTH
+      AUTH_USER_REGISTRATION_ROLE = "Public"
+      AUTH_USER_REGISTRATION = True
+      superset_oauth_key= ""
+      superset_oauth_secret= ""
+      OAUTH_PROVIDERS = [
+        {
+            'name': 'google',
+            'icon': 'fa-google',
+            'token_key': 'access_token',
+            'remote_app': {
+                'base_url': 'https://www.googleapis.com/oauth2/v2/',
+                'request_token_params': {
+                    'scope': 'https://www.googleapis.com/auth/userinfo.email'
+                },
+                'request_token_url': None,
+                'access_token_url': 'https://accounts.google.com/o/oauth2/token',
+                'authorize_url': 'https://accounts.google.com/o/oauth2/auth',
+                'consumer_key': superset_oauth_key,
+                'consumer_secret': superset_oauth_secret
+            }
+            
+        }
+        
+            
+            
+        
+        ]
+      
+
+---
+
+# Source: redash/charts/redis/templates/secret.yaml
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: superset-redis
+  namespace: superset
+  labels:
+    app: redis-superset
+type: Opaque
+stringData:
+  redis-password: ""
+---
+
+# Source: postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: superset-postgresql
+  namespace: superset
+  labels:
+    app.kubernetes.io/name: postgresql-superset
+    helm.sh/chart: postgresql-9.8.10
+    app.kubernetes.io/instance: psql
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+stringData:
+  postgresql-password: ""
